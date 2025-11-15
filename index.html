@@ -546,8 +546,8 @@ window.addEventListener('error', e=>{
 const CENTER = [54.1, 17.02];
 const baseStyle = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'; // token-free light
 
-const PROCESSED_URL = 'Data/Processed.geojson';
-const REMAIN_URL    = 'Data/Remaining.geojson';
+const PROCESSED_URL = 'data/Processed.geojson';
+const REMAIN_URL    = 'data/Remaining.geojson';
 
 
 async function loadJSON(u){ const r=await fetch(encodeURI(u)); if(!r.ok) throw new Error(u); return r.json(); }
