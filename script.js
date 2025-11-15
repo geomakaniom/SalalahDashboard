@@ -1,290 +1,246 @@
-/* -------------------------------------------------------
-   Salalah Dashboard  —  script.js (clean rebuild)
-   - Left map: ASSETS only
-   - Right map: COVERAGE (Processed / Remaining) only
-   - Case-safe file loading (Data/ or data/)
-   - Robust: removes any accidental coverage on left map
---------------------------------------------------------*/
+// ========== CONFIG ==========
+const CENTER = [54.1, 17.02];   // Salalah area (lng, lat)
+const ZOOM   = 11;
 
-// ---------- CONFIG ----------
-const MAP_CENTER = [54.115, 17.019];
-const MAP_ZOOM   = 12;
+// Vibrant but light-friendly colors per GROUP key (from manifest.json)
+const COLORS = {
+  Health:'#ef4444', Utilities:'#2563eb', PublicSafety:'#9333ea', PublicFacilities:'#14b8a6',
+  Education:'#f59e0b', RoadTransportation:'#6b7280', LandCover:'#22c55e', Hydrology:'#0ea5e9',
+  Geology:'#b45309', Shopping:'#8b5cf6', FoodFacilities:'#fb923c', Financial:'#334155',
+  Automotive:'#10b981', TouristSites:'#f97316', UrbanPlanning:'#06b6d4', Other:'#94a3b8'
+};
+const colorFor = g => COLORS[g] || COLORS.Other;
 
-// Asset layers to show on LEFT map.
-// Each item: { id, file, type: 'fill'|'line'|'circle', paint: {...} }
-const ASSET_FILES = [
-  { id: 'street', file: 'street.geojson', type: 'line',
-    paint: { 'line-color': '#2f4858', 'line-width': 1 } },
+// ========== BASEMAP (Mapbox if token provided, else free fallback) ==========
+const mbStyle = s => `https://api.mapbox.com/styles/v1/mapbox/${s}?access_token=${window.MAPBOX_TOKEN}`;
+const fallbackStyle = 'https://demotiles.maplibre.org/style.json';
+const mainStyle = window.MAPBOX_TOKEN ? mbStyle('streets-v12') : fallbackStyle; // light streets for progress tracking
+const miniStyle = window.MAPBOX_TOKEN ? mbStyle('light-v11')   : fallbackStyle;
 
-  { id: 'LightPoles', file: 'LightPoles.geojson', type: 'circle',
-    paint: { 'circle-radius': 3, 'circle-color': '#6a9fb5' } },
+// Main map
+const map = new maplibregl.Map({ container:'map', style: mainStyle, center: CENTER, zoom: ZOOM, pitch: 0, bearing: 0 });
+map.addControl(new maplibregl.NavigationControl(), 'top-right');
 
-  { id: 'Manholes', file: 'Manholes.geojson', type: 'circle',
-    paint: { 'circle-radius': 3, 'circle-color': '#b56576' } },
+// Mini overview
+const miniMap = new maplibregl.Map({ container:'miniMap', style: miniStyle, center: CENTER, zoom: 11, interactive:false });
 
-  { id: 'OTC', file: 'OTC.geojson', type: 'fill',
-    paint: { 'fill-color': '#ffd166', 'fill-opacity': 0.35 } },
+// ========== STATE ==========
+let manifest = {};                   // {Group: [file.geojson, ...]}
+const active = new Map();            // file -> {source, layers[], count, group}
+let donut, bar;
 
-  { id: 'BusStops', file: 'BusStops.geojson', type: 'circle',
-    paint: { 'circle-radius': 3, 'circle-color': '#118ab2' } },
-
-  { id: 'ParkingLot', file: 'ParkingLot.geojson', type: 'fill',
-    paint: { 'fill-color': '#8ecae6', 'fill-opacity': 0.35 } },
-
-  { id: 'Roundabout', file: 'Roundabout.geojson', type: 'line',
-    paint: { 'line-color': '#8d99ae', 'line-width': 1.5 } },
-
-  { id: 'Bridges', file: 'Bridges.geojson', type: 'line',
-    paint: { 'line-color': '#5e548e', 'line-width': 2 } },
-
-  { id: 'Travel_Agencies', file: 'Travel_Agencies.geojson', type: 'circle',
-    paint: { 'circle-radius': 3, 'circle-color': '#06d6a0' } },
-
-  { id: 'GasStation', file: 'GasStation.geojson', type: 'circle',
-    paint: { 'circle-radius': 3, 'circle-color': '#ef476f' } },
-
-  { id: 'Service_Stations', file: 'Service_Stations.geojson', type: 'circle',
-    paint: { 'circle-radius': 3, 'circle-color': '#8338ec' } },
-
-  { id: 'College', file: 'College.geojson', type: 'fill',
-    paint: { 'fill-color': '#a0c4ff', 'fill-opacity': 0.35 } },
-
-  { id: 'Nursery', file: 'Nursery.geojson', type: 'fill',
-    paint: { 'fill-color': '#caffbf', 'fill-opacity': 0.35 } },
-
-  { id: 'Schools', file: 'Schools.geojson', type: 'fill',
-    paint: { 'fill-color': '#ffd6a5', 'fill-opacity': 0.35 } },
-];
-
-// Coverage files (RIGHT mini-map only)
-const PROCESSED_FILE = 'Processed.geojson';
-const REMAINING_FILE = 'Remaining.geojson';
-
-// Coverage colors
-const PROCESSED_COLOR = '#71b084';
-const REMAINING_COLOR = '#bca3c2';
-const OUTLINE_COLOR   = '#3a3a3a';
-
-// ---------- BASE STYLE ----------
-function osmRasterStyle() {
-  return {
-    version: 8,
-    sources: {
-      osm: {
-        type: 'raster',
-        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-        tileSize: 256,
-        attribution: '© OpenStreetMap contributors'
-      }
-    },
-    layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
-  };
+// ========== UTILITIES ==========
+function humanName(file){
+  // "Utilities_OTC.geojson" -> "OTC"
+  const base = file.replace(/\.geojson$/i,'');
+  const parts = base.split('_');
+  const tail = parts.length>1 ? parts.slice(1).join('_') : base;
+  return tail.replace(/_/g,' ');
 }
 
-// ---------- HELPERS ----------
-async function fetchJSON(url) {
-  const r = await fetch(url, { cache: 'no-store' });
-  if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+function detectGeom(gj){
+  for(const f of gj.features||[]){
+    const t = f.geometry?.type || '';
+    if (t.includes('Point')) return 'point';
+    if (t.includes('Line')) return 'line';
+    if (t.includes('Polygon')) return 'polygon';
+  }
+  return 'point';
+}
+
+async function fetchJSON(path){
+  const r = await fetch(path);
+  if(!r.ok) throw new Error(`${path} -> ${r.status}`);
   return r.json();
 }
 
-// Try Data/ first then data/ (case-safe on GitHub Pages)
-async function loadFile(file) {
-  try { return await fetchJSON(`Data/${file}`); }
-  catch (e1) {
-    try { return await fetchJSON(`data/${file}`); }
-    catch (e2) {
-      console.error(`Missing file in both paths: Data/${file} and data/${file}`);
+// Robust loader that tolerates 'Data' vs 'data' folder casing on GitHub Pages
+async function loadFile(file){
+  // try 'Data/' first
+  try{
+    return await loadFile(file);
+  }catch(e1){
+    // if 404 or network error, try lowercase 'data/'
+    try{
+      return await fetchJSON(`data/${file}`);
+    }catch(e2){
+      console.error(`Failed to load both Data/${file} and data/${file}`);
       throw e2;
     }
   }
 }
 
-function isFC(gj) {
-  return gj && gj.type === 'FeatureCollection' && Array.isArray(gj.features);
+// Resolve CSS variable to actual color string (e.g., '--processed' -> '#4caf50')
+function cssVar(name, fallback){
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
 }
 
-function boundsOfFC(gj) {
-  if (!isFC(gj) || gj.features.length === 0) return null;
-  let minX =  Infinity, minY =  Infinity, maxX = -Infinity, maxY = -Infinity;
+// ========== CHIPS ==========
+function buildChips(){
+  const bar = document.getElementById('chipBar');
+  bar.innerHTML = '';
+  Object.entries(manifest).forEach(([group, files])=>{
+    files.forEach(file=>{
+      const chip = document.createElement('label');
+      chip.className = 'chip';
+      chip.style.borderColor = colorFor(group);
+      chip.innerHTML = `<input type="checkbox" checked><span>${humanName(file)}</span>`;
+      const cb = chip.querySelector('input');
+      cb.onchange = () => cb.checked ? addFile(file, group) : removeFile(file);
+      bar.appendChild(chip);
 
-  const upd = ([x, y]) => { if (x<minX) minX=x; if (y<minY) minY=y; if (x>maxX) maxX=x; if (y>maxY) maxY=y; };
-  const walk = (c) => (typeof c[0] === 'number') ? upd(c) : c.forEach(walk);
-
-  gj.features.forEach(f => {
-    const g = f.geometry;
-    if (!g) return;
-    if (g.type === 'Point') upd(g.coordinates);
-    else walk(g.coordinates);
+      // start ON: toggle twice to ensure addFile runs
+      cb.checked = false; cb.onchange();
+      cb.checked = true;  cb.onchange();
+    });
   });
-  return [[minX, minY], [maxX, maxY]];
+  updateKPIs();
 }
 
-// ---------- MAPS ----------
-const map = new maplibregl.Map({
-  container: 'map',
-  style: osmRasterStyle(),
-  center: MAP_CENTER,
-  zoom: MAP_ZOOM
-});
+document.getElementById('fitAll').onclick = () => fitToData();
+document.getElementById('resetPitch').onclick = () => map.setPitch(0);
 
-const miniMap = new maplibregl.Map({
-  container: 'coverageMap',
-  style: osmRasterStyle(),
-  center: MAP_CENTER,
-  zoom: MAP_ZOOM
-});
-
-// ---------- HARD BLOCK: NO COVERAGE ON LEFT MAP ----------
-function nukeCoverageOnMain() {
-  const style = map.getStyle();
-  if (!style || !style.layers) return;
-
-  // Remove any layer that mentions processed/remaining (case-insensitive)
-  style.layers
-    .map(l => l.id)
-    .filter(id => /processed|remaining/i.test(id))
-    .forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
-
-  // Remove common source ids
-  ['processed','remaining','processed_src','remaining_src']
-    .forEach(s => { if (map.getSource(s)) map.removeSource(s); });
-}
-map.on('load', nukeCoverageOnMain);
-['styledata','sourcedata','idle'].forEach(evt => map.on(evt, nukeCoverageOnMain));
-// Sweep a few seconds after load in case anything tries to re-add
-const _nukeTimer = setInterval(nukeCoverageOnMain, 1000);
-setTimeout(() => clearInterval(_nukeTimer), 8000);
-
-// ---------- LEFT MAP: ASSETS ONLY ----------
-async function addAsset(def) {
-  try {
-    const gj = await loadFile(def.file);
-    if (!isFC(gj) || gj.features.length === 0) {
-      console.warn(`Asset ${def.id}: empty/invalid → skipped`);
-      return;
-    }
-    const srcId = `asset-src-${def.id}`;
-    const lyrId = `asset-lyr-${def.id}`;
-
-    if (!map.getSource(srcId)) map.addSource(srcId, { type: 'geojson', data: gj });
-
-    const base = { id: lyrId, source: srcId, paint: def.paint || {} };
-    if (def.type === 'fill')      map.addLayer({ ...base, type: 'fill' });
-    else if (def.type === 'line') map.addLayer({ ...base, type: 'line' });
-    else                          map.addLayer({ ...base, type: 'circle' });
-
-    console.log(`✔ asset loaded: ${def.id} (${gj.features.length})`);
-  } catch (err) {
-    console.warn(`✖ asset failed: ${def.id} (${def.file})`, err);
+// ========== LOAD MANIFEST ==========
+async function loadManifest(){
+  try{
+    return await fetchJSON('manifest.json');
+  }catch(e){
+    // minimal fallback example
+    return {
+      Utilities:["Utilities_LightPoles.geojson","Utilities_Manholes.geojson","Utilities_OTC.geojson"],
+      Health:["Health_Hospitals.geojson","Health_Clinics.geojson"]
+    };
   }
 }
 
-async function loadAssets() {
-  for (const def of ASSET_FILES) {
-    await addAsset(def);
-  }
-}
+// ========== LAYER MANAGEMENT ==========
+async function addFile(file, group){
+  if(active.has(file)) return;
+  const data = await loadFile(file);
+  const type = detectGeom(data);
+  const sourceId = `src_${file}`;
+  const color = colorFor(group);
 
-// ---------- RIGHT MINI-MAP: COVERAGE ONLY ----------
-async function loadCoverage() {
-  let processed = { type: 'FeatureCollection', features: [] };
-  let remaining = { type: 'FeatureCollection', features: [] };
+  // cluster points
+  const cluster = type==='point';
+  map.addSource(sourceId, { type:'geojson', data, ...(cluster ? {cluster:true, clusterRadius:36} : {}) });
 
-  try { processed = await loadFile(PROCESSED_FILE); } catch { console.warn('Processed missing'); }
-  try { remaining = await loadFile(REMAINING_FILE); } catch { console.warn('Remaining missing'); }
-
-  if (!isFC(processed)) processed = { type: 'FeatureCollection', features: [] };
-  if (!isFC(remaining)) remaining = { type: 'FeatureCollection', features: [] };
-
-  // Sources
-  if (!miniMap.getSource('processed'))
-    miniMap.addSource('processed', { type: 'geojson', data: processed });
-  else
-    miniMap.getSource('processed').setData(processed);
-
-  if (!miniMap.getSource('remaining'))
-    miniMap.addSource('remaining', { type: 'geojson', data: remaining });
-  else
-    miniMap.getSource('remaining').setData(remaining);
-
-  // Layers
-  if (!miniMap.getLayer('processed_fill')) {
-    miniMap.addLayer({
-      id: 'processed_fill',
-      type: 'fill',
-      source: 'processed',
-      paint: { 'fill-color': PROCESSED_COLOR, 'fill-opacity': 0.35 }
+  const ids = [];
+  if(type==='point'){
+    ids.push(`cl_${file}`);
+    map.addLayer({
+      id:`cl_${file}`, type:'circle', source:sourceId, filter:['has','point_count'],
+      paint:{'circle-radius':['interpolate',['linear'],['get','point_count'],5,12,100,26],
+             'circle-color':color, 'circle-stroke-color':'#fff','circle-stroke-width':1}
     });
-    miniMap.addLayer({
-      id: 'processed_line',
-      type: 'line',
-      source: 'processed',
-      paint: { 'line-color': OUTLINE_COLOR, 'line-width': 1 }
+    ids.push(`pt_${file}`);
+    map.addLayer({
+      id:`pt_${file}`, type:'circle', source:sourceId, filter:['!', ['has','point_count']],
+      paint:{'circle-radius':5, 'circle-color':color, 'circle-stroke-color':'#fff', 'circle-stroke-width':1}
     });
-  }
-  if (!miniMap.getLayer('remaining_fill')) {
-    miniMap.addLayer({
-      id: 'remaining_fill',
-      type: 'fill',
-      source: 'remaining',
-      paint: { 'fill-color': REMAINING_COLOR, 'fill-opacity': 0.35 }
-    });
-    miniMap.addLayer({
-      id: 'remaining_line',
-      type: 'line',
-      source: 'remaining',
-      paint: { 'line-color': OUTLINE_COLOR, 'line-width': 1 }
-    });
+  }else if(type==='line'){
+    ids.push(`ln_${file}`);
+    map.addLayer({ id:`ln_${file}`, type:'line', source:sourceId, paint:{'line-color':color,'line-width':2}});
+  }else{
+    ids.push(`pl_${file}`,`pl_o_${file}`);
+    map.addLayer({ id:`pl_${file}`, type:'fill', source:sourceId, paint:{'fill-color':color,'fill-opacity':0.35}});
+    map.addLayer({ id:`pl_o_${file}`, type:'line', source:sourceId, paint:{'line-color':color,'line-width':1}});
   }
 
-  // Fit to union bounds if available
-  const pb = boundsOfFC(processed);
-  const rb = boundsOfFC(remaining);
-  const all = [pb, rb].filter(Boolean);
-  if (all.length) {
-    const minX = Math.min(...all.map(b => b[0][0]));
-    const minY = Math.min(...all.map(b => b[0][1]));
-    const maxX = Math.max(...all.map(b => b[1][0]));
-    const maxY = Math.max(...all.map(b => b[1][1]));
-    miniMap.fitBounds([[minX, minY], [maxX, maxY]], { padding: 20, duration: 0 });
-  }
+  // popup
+  map.on('click', ids[ids.length-1], (e)=>{
+    const p = e.features?.[0]?.properties || {};
+    const html = Object.entries(p).slice(0,10).map(([k,v])=>`<div><b>${k}</b>: ${v}</div>`).join('') || '<i>No attributes</i>';
+    new maplibregl.Popup().setLngLat(e.lngLat).setHTML(html).addTo(map);
+  });
 
-  // Double-ensure nothing leaks to the left map
-  nukeCoverageOnMain();
-  console.log(`Coverage → miniMap. Processed: ${processed.features.length}, Remaining: ${remaining.features.length}`);
+  active.set(file, {source:sourceId, layers:ids, count:(data.features||[]).length, group});
+  updateKPIs(); updateCharts(); fitToData();
 }
 
-// ---------- KPIs / CHARTS (optional safe stubs) ----------
-function setText(id, value) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = value;
+function removeFile(file){
+  const rec = active.get(file); if(!rec) return;
+  rec.layers.forEach(id=>map.getLayer(id) && map.removeLayer(id));
+  map.getSource(rec.source) && map.removeSource(rec.source);
+  active.delete(file);
+  updateKPIs(); updateCharts();
 }
-function updateKPIs() {
-  // Example: setText('kpi-total-assets', '—');
+
+function fitToData(){
+  const bounds = new maplibregl.LngLatBounds();
+  let has=false;
+  active.forEach(rec=>{
+    const d = map.getSource(rec.source)?._data || {};
+    (d.features||[]).forEach(f=>{
+      const g=f.geometry; if(!g) return;
+      const coords = g.type.includes('Point') ? [g.coordinates] :
+                     g.type.includes('Line') ? g.coordinates.flat(1) :
+                     g.coordinates.flat(2);
+      coords.forEach(c=>{bounds.extend(c); has=true;});
+    });
+  });
+  if(has) map.fitBounds(bounds,{padding:40, duration:600});
 }
-function drawCharts(proc = 0, rem = 0) {
-  const canvas = document.getElementById('donutChart');
-  if (!window.Chart || !canvas) return;
-  const ctx = canvas.getContext('2d');
-  try { if (window._donut) window._donut.destroy(); } catch {}
-  window._donut = new Chart(ctx, {
-    type: 'doughnut',
-    data: { labels: ['Processed','Remaining'], datasets: [{ data: [proc, rem] }] },
-    options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+
+// ========== MINI OVERVIEW (optional Areas.geojson) ==========
+async function loadAreas(){
+  try{
+    const gj = await fetchJSON('Data/Areas.geojson');
+    miniMap.addSource('areas',{type:'geojson',data:gj});
+    miniMap.addLayer({id:'areas-fill',type:'fill',source:'areas',paint:{'fill-color':'#93c5fd','fill-opacity':0.35}});
+    miniMap.addLayer({id:'areas-line',type:'line',source:'areas',paint:{'line-color':'#60a5fa','line-width':1}});
+  }catch(e){/* ok if missing */}
+}
+
+// ========== KPIs & CHARTS ==========
+function updateKPIs(){
+  const total = [...active.values()].reduce((s,a)=>s+a.count,0);
+  const layersOn = active.size;
+  const layersAll = Object.values(manifest).reduce((s,arr)=>s+arr.length,0);
+  const pct = layersAll? Math.round(layersOn/layersAll*100) : 0;
+  document.getElementById('kpiTotal').textContent = total.toLocaleString();
+  document.getElementById('kpiLayers').textContent = layersAll.toLocaleString();
+  document.getElementById('kpiPct').textContent = `${pct}%`;
+}
+
+function initCharts(){
+  donut = new Chart(document.getElementById('donut'),{
+    type:'doughnut',
+    data:{labels:[],datasets:[{data:[],backgroundColor:[],borderWidth:0}]},
+    options:{plugins:{legend:{position:'bottom'}}}
+  });
+  bar = new Chart(document.getElementById('bar'),{
+    type:'bar',
+    data:{labels:[],datasets:[{label:'Features',data:[],backgroundColor:[]}]},
+    options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{beginAtZero:true}}}
   });
 }
 
-// ---------- BOOT ----------
-async function boot() {
-  map.on('load', async () => {
-    await loadAssets();     // LEFT map: assets only
-    nukeCoverageOnMain();   // keep it clean
-    updateKPIs();
-  });
+function updateCharts(){
+  // donut: counts by GROUP for active layers
+  const byGroup = {};
+  active.forEach(({count,group})=>{byGroup[group]=(byGroup[group]||0)+count;});
+  const labels = Object.keys(byGroup);
+  donut.data.labels = labels;
+  donut.data.datasets[0].data = labels.map(l=>byGroup[l]);
+  donut.data.datasets[0].backgroundColor = labels.map(l=>colorFor(l));
+  donut.update();
 
-  miniMap.on('load', async () => {
-    await loadCoverage();   // RIGHT map: coverage only
-  });
+  // bar: top 12 active layers
+  const rows = [...active.entries()].map(([file,rec])=>({
+    name: humanName(file), count: rec.count, color: colorFor(rec.group)
+  })).sort((a,b)=>b.count-a.count).slice(0,12);
+  bar.data.labels = rows.map(r=>r.name);
+  bar.data.datasets[0].data = rows.map(r=>r.count);
+  bar.data.datasets[0].backgroundColor = rows.map(r=>r.color);
+  bar.update();
 }
-boot();
+
+// ========== BOOT ==========
+(async function(){
+  manifest = await loadManifest();
+  initCharts();
+  buildChips();
+  loadAreas();
+})();
