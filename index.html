@@ -622,7 +622,7 @@ const ASSET_ICONS = {
   // Health
   'Clinics': 'fa-clinic-medical', 'HealthCenters': 'fa-heartbeat', 'Hospitals': 'fa-hospital', 'Pharmacies': 'fa-pills',
   // Hydrology
-  'Afalj': 'fa-stream', 'Dams': 'fa-dam',
+  'Afalj': 'fa-water', 'Dams': 'fa-dam',
   // LandCover
   'Tree': 'fa-tree',
   // PublicFacilities
@@ -789,7 +789,7 @@ function buildLayerDock(manifest, layerIds){
 
   function model(){
     const rows = [];
-    const excludeFiles = ['GeologyFormation.geojson', 'SoilType.geojson', 'Swamp.geojson', 'Water_Spread.geojson', 'Streams.geojson', 'LandUse.geojson', 'Intersections.geojson', 'Village.geojson', 'GroceryStore.geojson'];
+    const excludeFiles = ['GeologyFormation.geojson', 'SoilType.geojson', 'Swamp.geojson', 'Water_Spread.geojson', 'Streams.geojson', 'LandUse.geojson', 'Intersections.geojson', 'Village.geojson', 'GroceryStore.geojson', 'SLLstreet.geojson', 'street.geojson', 'Street.geojson', 'STREET.geojson'];
     for (const [group, files] of Object.entries(manifest)){
       for (const file of files){
         
@@ -1252,7 +1252,7 @@ function buildLayerDock(manifest, layerIds){
   const assetCounts = new Map();
 
   // Files to exclude
-  const excludeFiles = ['GeologyFormation.geojson', 'SoilType.geojson', 'Swamp.geojson', 'Water_Spread.geojson', 'Streams.geojson', 'LandUse.geojson', 'Intersections.geojson', 'Village.geojson', 'GroceryStore.geojson'];
+  const excludeFiles = ['GeologyFormation.geojson', 'SoilType.geojson', 'Swamp.geojson', 'Water_Spread.geojson', 'Streams.geojson', 'LandUse.geojson', 'Intersections.geojson', 'Village.geojson', 'GroceryStore.geojson', 'SLLstreet.geojson', 'street.geojson', 'Street.geojson', 'STREET.geojson'];
 
   for (const [group, files] of Object.entries(manifest)){
     for (const file of files){
